@@ -20,7 +20,7 @@ import timeit
 import tensorflow as tf
 import horovod.tensorflow as hvd
 from tensorflow.keras import applications
-
+from mpi4py import MPI
 # Benchmark settings
 parser = argparse.ArgumentParser(description='TensorFlow Synthetic Benchmark',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -41,14 +41,21 @@ parser.add_argument('--num-iters', type=int, default=10,
 
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-
+parser.add_argument('--inter-op-threads', type=int, default=2,
+                            help='set inter op threads')
+parser.add_argument('--intra-op-threads', type=int, default=1,
+                            help='set intra op threads')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda
 
 # Horovod: initialize Horovod.
 hvd.init()
+comm = MPI.COMM_WORLD
 
+assert hvd.mpi_threads_supported()
+
+assert hvd.size() == MPI.COMM_WORLD.Get_size()
 # Horovod: pin GPU to be used to process local rank (one GPU per process)
 if args.cuda:
     gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -58,7 +65,8 @@ if args.cuda:
         tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 else:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
+    tf.config.threading.set_inter_op_parallelism_threads(args.inter_op_threads)
+    tf.config.threading.set_intra_op_parallelism_threads(args.intra_op_threads)
 # Set up standard model.
 model = getattr(applications, args.model)(weights=None)
 opt = tf.optimizers.SGD(0.01)
@@ -125,7 +133,8 @@ with tf.device(device):
 
     # Results
     img_sec_mean = np.mean(img_secs)
+    img_sec_mean = comm.allreduce(img_sec_mean)
     img_sec_conf = 1.96 * np.std(img_secs)
     log('Img/sec per %s: %.1f +-%.1f' % (device, img_sec_mean, img_sec_conf))
     log('Total img/sec on %d %s(s): %.1f +-%.1f' %
-        (hvd.size(), device, hvd.size() * img_sec_mean, hvd.size() * img_sec_conf))
+        (hvd.size(), device, img_sec_mean, hvd.size() * img_sec_conf))

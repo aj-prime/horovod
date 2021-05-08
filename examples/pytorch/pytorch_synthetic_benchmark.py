@@ -7,7 +7,7 @@ from torchvision import models
 import horovod.torch as hvd
 import timeit
 import numpy as np
-
+from mpi4py import MPI
 # Benchmark settings
 parser = argparse.ArgumentParser(description='PyTorch Synthetic Benchmark',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -31,11 +31,17 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
 
 parser.add_argument('--use-adasum', action='store_true', default=False,
                     help='use adasum algorithm to do reduction')
-
+parser.add_argument('--back-steps', type=int, default=1,
+                    help='backward passes per step')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 hvd.init()
+comm = MPI.COMM_WORLD
+
+assert hvd.mpi_threads_supported()
+
+assert hvd.size() == MPI.COMM_WORLD.Get_size()
 
 if args.cuda:
     # Horovod: pin GPU to local rank.
@@ -63,6 +69,7 @@ compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.n
 
 # Horovod: wrap optimizer with DistributedOptimizer.
 optimizer = hvd.DistributedOptimizer(optimizer,
+                                     backward_passes_per_step=args.back_steps,
                                      named_parameters=model.named_parameters(),
                                      compression=compression,
                                      op=hvd.Adasum if args.use_adasum else hvd.Average)
@@ -104,7 +111,7 @@ timeit.timeit(benchmark_step, number=args.num_warmup_batches)
 # Benchmark
 log('Running benchmark...')
 img_secs = []
-for x in range(args.num_iters):
+for x in range(args.num_iters*args.back_steps):
     time = timeit.timeit(benchmark_step, number=args.num_batches_per_iter)
     img_sec = args.batch_size * args.num_batches_per_iter / time
     log('Iter #%d: %.1f img/sec per %s' % (x, img_sec, device))
@@ -112,7 +119,14 @@ for x in range(args.num_iters):
 
 # Results
 img_sec_mean = np.mean(img_secs)
+
+#img_perf = comm.allgather(img_sec_mean)
+
+#if comm.Get_rank() == 0:
+#        print("Images all rank", imp_perf)
+
+img_sec_mean = comm.allreduce(img_sec_mean)
 img_sec_conf = 1.96 * np.std(img_secs)
 log('Img/sec per %s: %.1f +-%.1f' % (device, img_sec_mean, img_sec_conf))
 log('Total img/sec on %d %s(s): %.1f +-%.1f' %
-    (hvd.size(), device, hvd.size() * img_sec_mean, hvd.size() * img_sec_conf))
+    (hvd.size(), device,  img_sec_mean, hvd.size() * img_sec_conf))
