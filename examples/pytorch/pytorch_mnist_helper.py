@@ -1,7 +1,7 @@
 import argparse
 import os
 from filelock import FileLock
-import time
+
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,8 +9,8 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 import torch.utils.data.distributed
 import horovod.torch as hvd
-print("here I am ")
 from mpi4py import MPI
+import time
 import sys
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -63,82 +63,31 @@ def train(epoch):
     model.train()
     # Horovod: set epoch to sampler for shuffling.
     data_size = 60000
-    size = 4
-    num_steps = int(data_size/ (size* args.batch_size))
-    # train_sampler.set_epoch(epoch)
+    
+    num_steps = data_size/ (size_procs* args.batch_size)
+    train_sampler.set_epoch(epoch)
     time_dataloader = 0
     temp_dataloader = time.time()
     overall_training = time.time()
 
-    batch1_in = torch.zeros([args.batch_size,1,28,28],dtype=torch.float32)
-    batch2_in = torch.zeros([args.batch_size,1,28,28],dtype=torch.float32)
-
-    batch1_out = torch.zeros([args.batch_size,10],dtype=torch.int32)
-    batch2_out = torch.zeros([args.batch_size,10],dtype=torch.int32)
     myrank = MPI.COMM_WORLD.rank
 
-    for batch_idx in range(num_steps):
-
-        if(batch_idx % 2 ==0):
-            req_in = comm.irecv(source=size+myrank, tag=batch_idx+1000)
-            req_out = comm.irecv( source=size+myrank, tag=batch_idx)
-            data = batch1_in
-            target = batch1_out
-        else:
-            req_in = comm.irecv( source=size+myrank, tag=batch_idx+1000)
-            req_out = comm.irecv( source=size+myrank, tag=batch_idx)
-
-            data = batch2_in
-            target = batch2_out
-
-        print("training:", myrank)
-
-        time_dataloader = time.time() - temp_dataloader
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % args.log_interval == 0:
-            # Horovod: use train_sampler to determine the number of examples in
-            # this worker's partition.
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_sampler),
-                100. * batch_idx / len(train_loader), loss.item()))
-
-        batch2_in = req_in.wait()
-        batch2_out = req_out.wait()
-        temp_dataloader = time.time()
-    overall_training = time.time() - overall_training
-    print("Overall Training:", overall_training, " Dataloader:",time_dataloader)
-
-
-    '''
 
 
 
     for batch_idx, (data, target) in enumerate(train_loader):
         time_dataloader = time.time() - temp_dataloader
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % args.log_interval == 0:
-            # Horovod: use train_sampler to determine the number of examples in
-            # this worker's partition.
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_sampler),
-                100. * batch_idx / len(train_loader), loss.item()))
+
+        req_in = comm.isend(data, dest=myrank%size_procs, tag=batch_idx+1000)
+        req_out = comm.isend(target, dest=myrank%size_procs, tag=batch_idx)
+        req_in.wait()
+        req_out.wait()
+        
         temp_dataloader = time.time()
     overall_training = time.time() - overall_training
     print("Overall Training:", overall_training, " Dataloader:",time_dataloader)
 
-    '''
+
         
 
 
@@ -180,23 +129,23 @@ def test():
 if __name__ == '__main__':
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
-    sys.stdout.flush()
-
-    print("here")
-    sys.stdout.flush()
 
     # Horovod: initialize library.
     comm = MPI.COMM_WORLD
 
+    print("here helper")
+    sys.stdout.flush()
+
     # subcomm = MPI.COMM_WORLD.Split(color=1,
     #                            key=MPI.COMM_WORLD.rank)
 
-    print("here2")
-    sys.stdout.flush()
 
+    # hvd.init(subcomm)
 
     hvd.init()
     comm = MPI.COMM_WORLD
+
+    size_procs = 4
 
     assert hvd.mpi_threads_supported()
 
@@ -212,7 +161,6 @@ if __name__ == '__main__':
 
     # Horovod: limit # of CPU threads to be used per worker.
     torch.set_num_threads(1)
-    sys.stdout.flush()
 
     kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
     # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
@@ -222,30 +170,26 @@ if __name__ == '__main__':
         kwargs['multiprocessing_context'] = 'forkserver'
 
     data_dir = args.data_dir or './data'
-    # with FileLock(os.path.expanduser("~/.horovod_lock")):
-    #     train_dataset = \
-    #         datasets.MNIST(data_dir, train=True, download=True,
-    #                        transform=transforms.Compose([
-    #                            transforms.ToTensor(),
-    #                            transforms.Normalize((0.1307,), (0.3081,))
-    #                        ]))
+    with FileLock(os.path.expanduser("~/.horovod_lock")):
+        train_dataset = \
+            datasets.MNIST(data_dir, train=True, download=True,
+                           transform=transforms.Compose([
+                               transforms.ToTensor(),
+                               transforms.Normalize((0.1307,), (0.3081,))
+                           ]))
 
     # Horovod: use DistributedSampler to partition the training data.
-    # train_sampler = torch.utils.data.distributed.DistributedSampler(
-    #     train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=args.batch_size, sampler=train_sampler, **kwargs)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_dataset, num_replicas=size_procs, rank=hvd.rank()-size_procs)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, sampler=train_sampler, **kwargs)
 
-    # test_dataset = \
-    #     datasets.MNIST(data_dir, train=False, transform=transforms.Compose([
-    #         transforms.ToTensor(),
-    #         transforms.Normalize((0.1307,), (0.3081,))
-    #     ]))
-    # # Horovod: use DistributedSampler to partition the test data.
-    # test_sampler = torch.utils.data.distributed.DistributedSampler(
-    #     test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
-    #                                           sampler=test_sampler, **kwargs)
+
+    # Horovod: use DistributedSampler to partition the test data.
+    test_sampler = torch.utils.data.distributed.DistributedSampler(
+        test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
+                                              sampler=test_sampler, **kwargs)
 
     model = Net()
 
