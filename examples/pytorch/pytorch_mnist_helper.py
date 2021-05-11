@@ -136,20 +136,19 @@ if __name__ == '__main__':
     print("here helper")
     sys.stdout.flush()
 
-    # subcomm = MPI.COMM_WORLD.Split(color=1,
-    #                            key=MPI.COMM_WORLD.rank)
+    subcomm = MPI.COMM_WORLD.Split(color=1,
+                               key=MPI.COMM_WORLD.rank)
 
 
-    # hvd.init(subcomm)
+    hvd.init(subcomm)
 
-    hvd.init()
+    #hvd.init()
     comm = MPI.COMM_WORLD
 
     size_procs = 4
 
     assert hvd.mpi_threads_supported()
 
-    assert hvd.size() == MPI.COMM_WORLD.Get_size()
 
     torch.manual_seed(args.seed)
 
@@ -180,16 +179,16 @@ if __name__ == '__main__':
 
     # Horovod: use DistributedSampler to partition the training data.
     train_sampler = torch.utils.data.distributed.DistributedSampler(
-        train_dataset, num_replicas=size_procs, rank=hvd.rank()-size_procs)
+        train_dataset, num_replicas=size_procs, rank=hvd.rank())
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, sampler=train_sampler, **kwargs)
 
 
     # Horovod: use DistributedSampler to partition the test data.
-    test_sampler = torch.utils.data.distributed.DistributedSampler(
-        test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
-                                              sampler=test_sampler, **kwargs)
+    #test_sampler = torch.utils.data.distributed.DistributedSampler(
+    #    test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    #test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
+    #                                          sampler=test_sampler, **kwargs)
 
     model = Net()
 

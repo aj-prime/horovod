@@ -73,8 +73,8 @@ def train(epoch):
     batch1_in = torch.zeros([args.batch_size,1,28,28],dtype=torch.float32)
     batch2_in = torch.zeros([args.batch_size,1,28,28],dtype=torch.float32)
 
-    batch1_out = torch.zeros([args.batch_size,10],dtype=torch.int32)
-    batch2_out = torch.zeros([args.batch_size,10],dtype=torch.int32)
+    batch1_out = torch.zeros([args.batch_size],dtype=torch.long)
+    batch2_out = torch.zeros([args.batch_size],dtype=torch.long)
     myrank = MPI.COMM_WORLD.rank
 
     for batch_idx in range(num_steps):
@@ -91,7 +91,7 @@ def train(epoch):
             data = batch2_in
             target = batch2_out
 
-        print("training:", myrank)
+        #print("training:", myrank)
 
         time_dataloader = time.time() - temp_dataloader
         if args.cuda:
@@ -101,15 +101,18 @@ def train(epoch):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
-        if batch_idx % args.log_interval == 0:
+        if batch_idx % args.log_interval == 0 and myrank==0:
             # Horovod: use train_sampler to determine the number of examples in
             # this worker's partition.
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_sampler),
-                100. * batch_idx / len(train_loader), loss.item()))
-
-        batch2_in = req_in.wait()
-        batch2_out = req_out.wait()
+                epoch, batch_idx * len(data), 60000,
+                100. * batch_idx / 60000, loss.item()))
+        if(batch_idx % 2 ==0):
+            batch2_in = req_in.wait()
+            batch2_out = req_out.wait()
+        else:
+            batch1_in = req_in.wait()
+            batch1_out = req_out.wait()
         temp_dataloader = time.time()
     overall_training = time.time() - overall_training
     print("Overall Training:", overall_training, " Dataloader:",time_dataloader)
@@ -188,19 +191,17 @@ if __name__ == '__main__':
     # Horovod: initialize library.
     comm = MPI.COMM_WORLD
 
-    # subcomm = MPI.COMM_WORLD.Split(color=1,
-    #                            key=MPI.COMM_WORLD.rank)
+    subcomm = MPI.COMM_WORLD.Split(color=0,
+                               key=MPI.COMM_WORLD.rank)
 
     print("here2")
     sys.stdout.flush()
 
 
-    hvd.init()
+    hvd.init(subcomm)
     comm = MPI.COMM_WORLD
 
     assert hvd.mpi_threads_supported()
-
-    assert hvd.size() == MPI.COMM_WORLD.Get_size()
 
     torch.manual_seed(args.seed)
 
@@ -236,16 +237,16 @@ if __name__ == '__main__':
     # train_loader = torch.utils.data.DataLoader(
     #     train_dataset, batch_size=args.batch_size, sampler=train_sampler, **kwargs)
 
-    # test_dataset = \
-    #     datasets.MNIST(data_dir, train=False, transform=transforms.Compose([
-    #         transforms.ToTensor(),
-    #         transforms.Normalize((0.1307,), (0.3081,))
-    #     ]))
+    test_dataset = \
+        datasets.MNIST(data_dir, train=False, transform=transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ]))
     # # Horovod: use DistributedSampler to partition the test data.
-    # test_sampler = torch.utils.data.distributed.DistributedSampler(
-    #     test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
-    # test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
-    #                                           sampler=test_sampler, **kwargs)
+    test_sampler = torch.utils.data.distributed.DistributedSampler(
+         test_dataset, num_replicas=hvd.size(), rank=hvd.rank())
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
+                                              sampler=test_sampler, **kwargs)
 
     model = Net()
 
@@ -279,4 +280,4 @@ if __name__ == '__main__':
 
     for epoch in range(1, args.epochs + 1):
         train(epoch)
-        # test()
+        test()
