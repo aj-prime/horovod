@@ -133,7 +133,7 @@ def train(epoch):
     if(helper_process == -1):
 
         for batch_idx, (data, target) in enumerate(train_loader):
-            time_dataloader = time.time() - temp_dataloader
+            time_dataloader += time.time() - temp_dataloader
             if args.cuda:
                 data, target = data.cuda(), target.cuda()
             optimizer.zero_grad()
@@ -141,7 +141,7 @@ def train(epoch):
             loss = F.nll_loss(output, target)
             loss.backward()
             optimizer.step()
-            if batch_idx % args.log_interval == 0:
+            if batch_idx % args.log_interval == 0 and hvd.rank()==0:
                 # Horovod: use train_sampler to determine the number of examples in
                 # this worker's partition.
                 print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
@@ -244,7 +244,7 @@ if __name__ == '__main__':
 
     
 
-    kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
+    kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
     # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
     # issues with Infiniband implementations that are not fork-safe
     if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and
@@ -259,7 +259,8 @@ if __name__ == '__main__':
                 datasets.CIFAR10(data_dir, train=True, download=True,
                                transform=transforms.Compose([
                                    transforms.ToTensor(),
-                                   transforms.Normalize((0.1307,), (0.3081,))
+                                   transforms.Normalize((0.1307,), (0.3081,)),
+                                   transforms.RandomRotation(30),
                                ]))
 
         # Horovod: use DistributedSampler to partition the training data.
@@ -281,7 +282,7 @@ if __name__ == '__main__':
         test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size,
                                                   sampler=test_sampler, **kwargs)
 
-    model = resnet_cifar_torch.get_resnet_v2((args.batch_size,3,32,32), depth=get_depth(version=2,n=12), num_classes=10)
+    model = resnet_cifar_torch.get_resnet_v1((args.batch_size,3,32,32), depth=get_depth(version=1,n=3), num_classes=10)
 
     # By default, Adasum doesn't need scaling up learning rate.
     lr_scaler = hvd.size() if not args.use_adasum else 1
@@ -315,4 +316,6 @@ if __name__ == '__main__':
         train(epoch)
 
         if( helper_process == -1 or helper_process == 0):
+            time_test= time.time()
             test()
+            print("Test time:",time.time()-time_test)
