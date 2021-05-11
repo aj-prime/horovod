@@ -61,7 +61,11 @@ def train(epoch):
     model.train()
     # Horovod: set epoch to sampler for shuffling.
     train_sampler.set_epoch(epoch)
+    time_dataloader = 0
+    temp_dataloader = time.time()
+    overall_training = time.time()
     for batch_idx, (data, target) in enumerate(train_loader):
+        time_dataloader = time.time() - temp_dataloader
         if args.cuda:
             data, target = data.cuda(), target.cuda()
         optimizer.zero_grad()
@@ -75,6 +79,10 @@ def train(epoch):
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_sampler),
                 100. * batch_idx / len(train_loader), loss.item()))
+        temp_dataloader = time.time()
+    overall_training = time.time() - overall_training
+    print("Overall Training:", overall_training, " Dataloader:",time_dataloader)
+        
 
 
 def metric_average(val, name):
